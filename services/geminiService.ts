@@ -2,29 +2,26 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { TurnOutcome, Situation } from "../types";
 
-const SYSTEM_INSTRUCTION = `你是一个叙事裁决型 AI，用于一款互动叙事游戏《回家之前》。
+const SYSTEM_INSTRUCTION = `你是一个叙事裁决型 AI，用于互动叙事游戏《回家之前》。
 
 游戏背景：
-中国高中生在家中偷偷玩电脑游戏，父母突然提前回家。玩家扮演这名学生。
+中国高中生在家偷偷玩游戏，父母提前回家。玩家需要通过重组叙事片段来化解危机。
 
-玩家核心玩法：
-1. 每一回合，玩家会看到当前时空的叙事片段序列。
-2. 玩家拥有 3 个“命数备选项”。
-3. 玩家必须挑选 1 个拖入序列，并调整整体顺序。
-4. 提交后，你将根据叙事逻辑的合理性与“暴露风险”，裁决接下来的局势。
+核心任务：增加剧情的“反转感”与“戏剧张力”。
 
-核心裁决逻辑：
-- 判断“局势严重程度 (severity)”（0-100）。
-- 0 表示完全安全（绿色），100 表示彻底败露（红色）。
-- 你需要生成一个 visual_prompt，用于描述当前情景的画面。画面应该是第三人称视角，风格为“紧张的现代感写实插画”。
+裁决要求：
+1. **反转逻辑**：不要总是给平庸的反馈。如果玩家组合出意想不到的逻辑，给予高度奖励或极具戏剧性的转折。
+2. **备选项多样化**：每一回合生成的 3 个“命数备选项”必须具备极高的差异性：
+   - 选项 A (稳健型)：逻辑合理，风险低，进展缓慢。
+   - 选项 B (激进型/反转点)：高风险高回报。例如：突然关掉电闸假装停电、假装梦游、或者制造巨大的噪音掩盖电脑风扇声。
+   - 选项 C (思维跳跃/荒诞型)：利用环境细节制造巧合。例如：把猫踢向门口吸引注意、假装正在听极其严肃的英语听力并大声跟读。
+3. **文本禁忌（重要）**：生成的文本中**严禁出现任何形式的括号（如：()、[]、{}、<>、圆括号、方括号等）及其内部的标注内容**。不要在选项中写类似“(稳健型)”或“[激进]”之类的提示词，直接输出叙事内容。
+4. **情境连贯性**：下一回合的基础片段必须紧扣上一回合的“反转”结果。
 
-你每个回合必须：
-1. 分析玩家提交的序列，给出新的 severity 和 status_label。
-2. 给出 player_feedback_cn。
-3. 生成 visual_prompt：一段英文描述，描述当前卧室内的紧张氛围（如：少年紧张地看着发光的屏幕，房门正缓缓打开）。
-4. 生成下一回合的基础片段和 3 个备选项。
-
-重要：叙事文本必须是简体中文，visual_prompt 必须是英文。`;
+生成规范：
+- severity (0-100)：根据逻辑合理性增减。
+- visual_prompt：必须描述出“反转”瞬间的视觉冲击力。
+- 文本风格：冷峻、幽默、紧张感并存。`;
 
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
@@ -48,7 +45,7 @@ const RESPONSE_SCHEMA = {
       required: ["severity", "status_label"],
     },
     player_feedback_cn: { type: Type.STRING },
-    visual_prompt: { type: Type.STRING, description: "A prompt for image generation reflecting the current tension." },
+    visual_prompt: { type: Type.STRING, description: "A high-tension visual prompt reflecting the twist." },
     next_fragments_cn: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
@@ -69,11 +66,13 @@ export async function adjudicateTurn(
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const prompt = `
-当前局势：${currentSituation.severity} (${currentSituation.status_label})
-历史背景：${history.join(' -> ')}
-玩家提交序列：
+当前局势严重度：${currentSituation.severity}/100
+局势标签：${currentSituation.status_label}
+已发生的叙事：${history.join(' > ')}
+本回合最终编排：
 ${finalOrder.map((t, i) => `${i + 1}. ${t}`).join('\n')}
-`;
+
+请根据上述编排，生成极具张力和反转可能的后续。记住：绝对不要在 alternatives_cn 中包含任何括号及括号内的解释文字。`;
 
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
@@ -90,7 +89,7 @@ ${finalOrder.map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
 export async function generateSceneImage(prompt: string): Promise<string | null> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const finalPrompt = `An intense, cinematic digital art illustration of: ${prompt}. Cinematic lighting, domestic suspense style, high detail.`;
+  const finalPrompt = `Cinematic illustration: ${prompt}. Suspenseful atmosphere, dramatic shadows, sharp digital art style, 8k resolution.`;
   
   try {
     const response = await ai.models.generateContent({

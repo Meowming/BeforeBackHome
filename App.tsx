@@ -211,8 +211,8 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content Area with conditional padding to prevent panel overlap */}
-      <main className={`w-full max-w-2xl px-6 mt-10 transition-all duration-500 ${gameState === 'playing' ? 'pb-80' : 'pb-20'}`}>
+      {/* Main Content Area with significant bottom padding to prevent panel overlap */}
+      <main className={`w-full max-w-2xl px-6 mt-10 transition-all duration-500 ${gameState === 'playing' ? 'pb-[450px]' : 'pb-20'}`}>
         {gameState === 'intro' && (
           <div className="flex flex-col items-center space-y-6 py-10">
             <h2 className="text-xl font-bold text-red-400/80 tracking-[0.2em] uppercase serif mb-6">默认结局：如果我们什么都不做...</h2>
@@ -265,8 +265,8 @@ const App: React.FC = () => {
                 </div>
               </SortableContext>
 
-              {/* Unique Visual Reveal: Scene Image at the bottom of sequence */}
-              <div ref={imageContainerRef} className="pt-8 border-t border-white/5 relative">
+              {/* Unique Visual Reveal: Scene Image at the bottom of sequence with extra margin to prevent overlap */}
+              <div ref={imageContainerRef} className="pt-8 border-t border-white/5 relative mb-24">
                  {(isImageLoading || currentImage) && (
                     <div className="animate-in fade-in zoom-in-95 duration-1000">
                       <div className="flex items-center gap-6 mb-6">
@@ -297,6 +297,8 @@ const App: React.FC = () => {
                           </>
                         )}
                       </div>
+                      {/* Added spacer below image to ensure scrollability past the image before hitting the fixed panel */}
+                      <div className="h-32 w-full" aria-hidden="true" />
                     </div>
                  )}
               </div>
