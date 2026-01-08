@@ -1,32 +1,28 @@
 
-export interface Stats {
-  trust: number;
-  autonomy: number;
-  study: number;
-  risk: number;
-  coherence: number;
+export interface Situation {
+  severity: number; // 0 (Perfect/Green) to 100 (Disaster/Red)
+  status_label: string; // e.g., "信任尚存", "心生怀疑", "岌岌可危"
 }
 
 export interface Fragment {
   id: string;
   text: string;
   isFixed: boolean;
+  isDeleted?: boolean;
+  isNew?: boolean;
 }
 
 export interface TurnOutcome {
   turn_id: string;
   outcome: {
     is_game_over: boolean;
-    ending_type: 'caught' | 'coherence_collapse' | 'none';
+    ending_type: 'caught' | 'total_distrust' | 'none';
     ending_text: string;
   };
-  delta: Partial<Stats>;
-  state_tags: {
-    risk_level: 'low' | 'medium' | 'high' | 'critical';
-    turn_type: 'normal' | 'high_risk' | 'confrontation' | 'resolution';
-  };
+  new_situation: Situation;
   player_feedback_cn: string;
   next_fragments_cn: string[];
+  alternatives_cn: string[];
 }
 
 export interface GameHistoryItem {

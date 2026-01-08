@@ -1,43 +1,32 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { TurnOutcome, Stats, Fragment } from "../types";
+import { TurnOutcome, Situation } from "../types";
 
-const SYSTEM_INSTRUCTION = `你是一个叙事裁决型 AI，用于一款单次事件的互动叙事游戏《回家之前》。
+const SYSTEM_INSTRUCTION = `你是一个叙事裁决型 AI，用于一款互动叙事游戏《回家之前》。
 
 游戏背景：
-中国高中生在家中偷偷玩电脑游戏，父母突然提前回家。
-整个故事只发生在这一次回家事件中，不允许时间循环、不允许第二天、不允许切换场景。
+中国高中生在家中偷偷玩电脑游戏，父母突然提前回家。玩家扮演这名学生。
 
-玩家玩法：
-玩家通过拖拽并重新排序中文文本片段，来表达行为与叙事的先后顺序。
-你必须根据文本顺序来裁决剧情发展与数值变化。
+玩家核心玩法：
+1. 每一回合，玩家会看到当前时空的叙事片段序列。
+2. 玩家拥有 3 个“命数备选项”。
+3. 玩家必须挑选 1 个拖入序列，并调整整体顺序。
+4. 提交后，你将根据叙事逻辑的合理性与“暴露风险”，裁决接下来的局势。
 
-重要规则：
-- 只能输出 JSON，不允许任何额外文字
-- 所有叙事文本必须是简体中文
-- 不得提及 AI、模型、系统、提示词等实现细节
-- 不得引入新角色或跳出家庭场景
-- 必须保持“同一晚、同一事件”的连续性
-
-可见数值 (0-100)：
-- trust：父母信任 (初始50)
-- autonomy：自主感 (初始50)
-- study：学习表现 (初始50)
-
-隐藏数值 (0-100)：
-- risk：即时风险 (初始50)
-- coherence：叙事一致性 (初始50)
-
-硬性失败规则：
-- 在 HIGH_RISK 回合中，如果排序结果表示游戏仍在运行或发声，必须导致 Game Over
-- 在 CONFRONTATION 回合中，如果叙事明显矛盾，必须可能导致 Game Over
-- 任意可见数值 < 0 导致游戏结束。
+核心裁决逻辑：
+- 废除具体数值（信任、自主等），改为判断“局势严重程度 (severity)”（0-100）。
+- 0 表示完全安全且信任感极佳（绿色）。
+- 50 表示父母开始怀疑，气氛变得紧张（橙色）。
+- 100 表示彻底败露或信任崩塌，游戏结束（红色）。
+- 如果叙事中出现了明显的穿帮、巨大的逻辑漏洞、或被父母当场看到电脑屏幕，直接判定 is_game_over 为 true。
 
 你每个回合必须：
-1. 给出数值变化 (delta)
-2. 给出一段玩家可理解的反馈 (player_feedback_cn)
-3. 生成下一回合的可排序文本片段 (next_fragments_cn, 4-6 条)，其中 1-2 条应标记逻辑锚点（暗示某些应为固定）
-4. 标注当前回合类型与风险等级`;
+1. 分析玩家提交的叙事序列，给出新的 severity 分数。
+2. 给出 status_label（如：风平浪静、略显局促、极度可疑、末日临头）。
+3. 给出 player_feedback_cn（对玩家刚才编织出的叙事逻辑的评价）。
+4. 生成下一回合的基础片段 (next_fragments_cn) 和 3 个全新备选项 (alternatives_cn)。
+
+重要：叙事文本必须是简体中文。`;
 
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
@@ -52,52 +41,42 @@ const RESPONSE_SCHEMA = {
       },
       required: ["is_game_over", "ending_type", "ending_text"],
     },
-    delta: {
+    new_situation: {
       type: Type.OBJECT,
       properties: {
-        trust: { type: Type.NUMBER },
-        autonomy: { type: Type.NUMBER },
-        study: { type: Type.NUMBER },
-        risk: { type: Type.NUMBER },
-        coherence: { type: Type.NUMBER },
+        severity: { type: Type.NUMBER, description: "0-100 score of how bad things are." },
+        status_label: { type: Type.STRING, description: "A short label describing current status." },
       },
-    },
-    state_tags: {
-      type: Type.OBJECT,
-      properties: {
-        risk_level: { type: Type.STRING },
-        turn_type: { type: Type.STRING },
-      },
-      required: ["risk_level", "turn_type"],
+      required: ["severity", "status_label"],
     },
     player_feedback_cn: { type: Type.STRING },
     next_fragments_cn: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
     },
+    alternatives_cn: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+    },
   },
-  required: ["turn_id", "outcome", "delta", "state_tags", "player_feedback_cn", "next_fragments_cn"],
+  required: ["turn_id", "outcome", "new_situation", "player_feedback_cn", "next_fragments_cn", "alternatives_cn"],
 };
 
 export async function adjudicateTurn(
   history: string[],
-  currentOrder: string[],
-  stats: Stats
+  finalOrder: string[],
+  currentSituation: Situation
 ): Promise<TurnOutcome> {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const prompt = `
-当前游戏状态：
-Trust: ${stats.trust}, Autonomy: ${stats.autonomy}, Study: ${stats.study}
-Risk: ${stats.risk}, Coherence: ${stats.coherence}
+当前局势严重度：${currentSituation.severity} (${currentSituation.status_label})
+历史背景：${history.join(' -> ')}
 
-历史剧情回顾：
-${history.join('\n')}
+玩家提交的叙事序列：
+${finalOrder.map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
-本回合玩家确定的文本顺序：
-${currentOrder.map((t, i) => `${i + 1}. ${t}`).join('\n')}
-
-请根据上述信息裁决本回合结果。
+请根据叙事逻辑的暴露风险裁决这一回合。如果父母已经彻底怀疑或证据确凿，请结束游戏。
 `;
 
   const response = await ai.models.generateContent({
