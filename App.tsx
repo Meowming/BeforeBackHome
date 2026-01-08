@@ -17,7 +17,7 @@ import {
 } from '@dnd-kit/sortable';
 
 import { Fragment, Situation, GameHistoryItem, TurnOutcome } from './types';
-import { adjudicateTurn } from './services/geminiService';
+import { adjudicateTurn, generateSceneImage } from './services/geminiService';
 import FragmentCard from './components/FragmentCard';
 import StatusIndicator from './components/StatusIndicator';
 
@@ -62,11 +62,14 @@ const App: React.FC = () => {
   );
   
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [currentImage, setCurrentImage] = useState<string | null>(null);
+  const [isImageLoading, setIsImageLoading] = useState(false);
   const [gameOutcome, setGameOutcome] = useState<TurnOutcome['outcome'] | null>(null);
   const [feedback, setFeedback] = useState<string>("时间紧迫，父母已经到门口了。");
   const [hasAddedAlternative, setHasAddedAlternative] = useState(false);
 
   const feedbackRef = useRef<HTMLDivElement>(null);
+  const imageContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (gameState === 'intro') {
@@ -75,35 +78,39 @@ const App: React.FC = () => {
     }
   }, [gameState]);
 
-  // Auto-scroll to feedback on new round
+  // Enhanced auto-scroll logic
   useEffect(() => {
     if (gameState === 'playing' && history.length > 0) {
-      feedbackRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (currentImage) {
+        // Scroll to the new image specifically once it arrives
+        setTimeout(() => {
+          imageContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 100);
+      } else if (!isSubmitting) {
+        // Scroll to the feedback area for the new round
+        feedbackRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
-  }, [history.length, gameState]);
+  }, [history.length, currentImage, gameState, isSubmitting]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over) return;
-
     const activeId = active.id as string;
     const overId = over.id as string;
-
     const activeInAltIndex = alternatives.findIndex(a => a.id === activeId);
     
     if (activeInAltIndex !== -1) {
       if (hasAddedAlternative) return;
-
       const altItem = alternatives[activeInAltIndex];
       const overIndex = currentFragments.findIndex(f => f.id === overId);
       const newFragments = [...currentFragments];
       const insertAt = overIndex >= 0 ? overIndex : newFragments.length;
-      
       newFragments.splice(insertAt, 0, { ...altItem, isNew: true });
       setCurrentFragments(newFragments);
       setAlternatives(prev => prev.filter(a => a.id !== activeId));
@@ -126,14 +133,23 @@ const App: React.FC = () => {
     const turnIndex = history.length + 1;
     
     setIsSubmitting(true);
+    setIsImageLoading(true);
+    setCurrentImage(null); 
+
     try {
       const historyTexts = history.flatMap(h => h.fragments.map(f => f.text));
       const result = await adjudicateTurn(historyTexts, finalNarrative, situation);
 
       setSituation(result.new_situation);
 
+      // Generate Image
+      const sceneImgPromise = generateSceneImage(result.visual_prompt);
+
       if (result.outcome.is_game_over) {
         setGameOutcome(result.outcome);
+        const sceneImg = await sceneImgPromise;
+        setCurrentImage(sceneImg);
+        setIsImageLoading(false);
         setGameState('ended');
       } else {
         const archivedFragments = [...currentFragments];
@@ -144,25 +160,30 @@ const App: React.FC = () => {
         }]);
         setFeedback(result.player_feedback_cn);
         
-        // Use unique IDs with Turn Index to avoid overlaps
+        // Critical Fix: Turn-specific IDs to prevent overlaps/collisions
         setCurrentFragments(result.next_fragments_cn.map((t, idx) => ({
-          id: `turn-${turnIndex}-base-${idx}`, 
+          id: `r${turnIndex}-f${idx}`, 
           text: t, 
           isFixed: idx === 0
         })));
         
         setAlternatives(result.alternatives_cn.map((t, idx) => ({
-          id: `turn-${turnIndex}-alt-${idx}`, 
+          id: `r${turnIndex}-alt${idx}`, 
           text: t, 
           isFixed: false, 
           isNew: true 
         })));
 
         setHasAddedAlternative(false);
+
+        const sceneImg = await sceneImgPromise;
+        setCurrentImage(sceneImg);
+        setIsImageLoading(false);
       }
     } catch (e) {
       console.error(e);
       alert("因果律扰动过大，请刷新重试。");
+      setIsImageLoading(false);
     } finally {
       setIsSubmitting(false);
     }
@@ -177,11 +198,12 @@ const App: React.FC = () => {
     setHasAddedAlternative(false);
     setGameState('intro');
     setIntroIndex(-1);
+    setCurrentImage(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
-    <div className="min-h-screen bg-[#020617] bg-gradient-to-b from-indigo-950/20 via-slate-950 to-purple-950/20 flex flex-col items-center pb-56">
+    <div className="min-h-screen bg-[#020617] bg-gradient-to-b from-indigo-950/20 via-slate-950 to-purple-950/20 flex flex-col items-center">
       <header className="sticky top-0 z-50 w-full bg-[#020617]/80 backdrop-blur-xl border-b border-white/5 px-4 shadow-2xl">
         <div className="max-w-4xl mx-auto flex flex-col items-center">
           <h1 className="text-2xl font-black pt-5 pb-3 text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 via-white to-purple-300 tracking-[0.3em] uppercase serif">回家之前</h1>
@@ -189,7 +211,8 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <main className="w-full max-w-2xl px-6 mt-10">
+      {/* Main Content Area with conditional padding to prevent panel overlap */}
+      <main className={`w-full max-w-2xl px-6 mt-10 transition-all duration-500 ${gameState === 'playing' ? 'pb-80' : 'pb-20'}`}>
         {gameState === 'intro' && (
           <div className="flex flex-col items-center space-y-6 py-10">
             <h2 className="text-xl font-bold text-red-400/80 tracking-[0.2em] uppercase serif mb-6">默认结局：如果我们什么都不做...</h2>
@@ -212,11 +235,11 @@ const App: React.FC = () => {
         )}
 
         {gameState !== 'intro' && (
-          <div className="space-y-12 mb-20 opacity-30 grayscale-[0.8] blur-[0.5px]">
+          <div className="space-y-12 mb-20 opacity-30 grayscale-[0.8] blur-[1px]">
             {history.map((item, hIdx) => (
               <div key={`history-${hIdx}`}>
                 <div className="text-[10px] text-slate-500 font-bold tracking-[0.5em] mb-4 text-center uppercase">过去的回响 ROUND {item.round}</div>
-                {item.fragments.map(f => <FragmentCard key={`hist-${f.id}`} fragment={f} isLocked={true} />)}
+                {item.fragments.map(f => <FragmentCard key={f.id} fragment={f} isLocked={true} />)}
               </div>
             ))}
           </div>
@@ -233,23 +256,61 @@ const App: React.FC = () => {
                </div>
             </div>
 
-            <SortableContext items={currentFragments.map(f => f.id)} strategy={verticalListSortingStrategy}>
-              <div className="min-h-[300px] pb-10 space-y-1">
-                {currentFragments.map((f) => (
-                  <FragmentCard key={f.id} fragment={f} isLocked={false} />
-                ))}
-              </div>
-            </SortableContext>
+            <div className="relative">
+              <SortableContext items={currentFragments.map(f => f.id)} strategy={verticalListSortingStrategy}>
+                <div className="min-h-[200px] space-y-1 mb-16">
+                  {currentFragments.map((f) => (
+                    <FragmentCard key={f.id} fragment={f} isLocked={false} />
+                  ))}
+                </div>
+              </SortableContext>
 
-            {/* Alternatives Pool (Floating Panel) */}
-            <div className="fixed bottom-0 left-0 w-full px-6 pb-12 pt-16 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent z-40 pointer-events-none">
+              {/* Unique Visual Reveal: Scene Image at the bottom of sequence */}
+              <div ref={imageContainerRef} className="pt-8 border-t border-white/5 relative">
+                 {(isImageLoading || currentImage) && (
+                    <div className="animate-in fade-in zoom-in-95 duration-1000">
+                      <div className="flex items-center gap-6 mb-6">
+                        <div className="h-px flex-grow bg-white/5"></div>
+                        <span className="text-[10px] font-black text-slate-500 tracking-[0.4em] uppercase">因果快照</span>
+                        <div className="h-px flex-grow bg-white/5"></div>
+                      </div>
+                      <div className="relative w-full aspect-video rounded-3xl overflow-hidden border border-white/10 shadow-2xl bg-slate-900/50 group">
+                        {isImageLoading ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center space-y-4">
+                            <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                            <span className="text-[10px] text-indigo-400 font-bold tracking-widest uppercase animate-pulse text-center px-4">
+                              时空扰动中...<br/>正在解析行为带来的快照
+                            </span>
+                          </div>
+                        ) : currentImage && (
+                          <>
+                            <img 
+                              src={currentImage} 
+                              alt="Scene Snapshot" 
+                              className={`w-full h-full object-cover transition-all duration-1000 grayscale-[0.3] group-hover:grayscale-0 ${situation.severity > 60 ? 'sepia-[0.3] hue-rotate-[-30deg]' : ''}`} 
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent" />
+                            <div className="absolute bottom-4 left-6 flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>
+                              <span className="text-[9px] font-bold text-indigo-300 uppercase tracking-widest">Reality Captured</span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                 )}
+              </div>
+            </div>
+
+            {/* Alternatives Pool (Floating Panel) - Always in front */}
+            <div className="fixed bottom-0 left-0 w-full px-6 pb-12 pt-20 bg-gradient-to-t from-[#020617] via-[#020617] to-transparent z-[100] pointer-events-none">
               <div className="max-w-2xl mx-auto pointer-events-auto">
-                {!hasAddedAlternative && (
+                {!hasAddedAlternative && !isSubmitting && (
                   <div className="animate-in slide-in-from-bottom-5 duration-500">
-                    <div className="flex items-center gap-6 mb-6">
-                      <div className="h-px flex-grow bg-white/5"></div>
-                      <span className="text-[10px] font-black text-slate-500 tracking-[0.4em] uppercase">备选分支</span>
-                      <div className="h-px flex-grow bg-white/5"></div>
+                    <div className="flex items-center gap-6 mb-4">
+                      <div className="h-px flex-grow bg-white/10"></div>
+                      <span className="text-[10px] font-black text-indigo-400 tracking-[0.4em] uppercase">命数备选 (选其一)</span>
+                      <div className="h-px flex-grow bg-white/10"></div>
                     </div>
                     <div className="flex flex-col gap-3">
                       <SortableContext items={alternatives.map(a => a.id)} strategy={verticalListSortingStrategy}>
@@ -261,19 +322,19 @@ const App: React.FC = () => {
                   </div>
                 )}
                 
-                <div className="mt-8 flex justify-center">
+                <div className="mt-6 flex justify-center">
                    <button 
                     onClick={handleSubmit} 
                     disabled={isSubmitting || !hasAddedAlternative}
                     className={`
-                      w-full py-5 rounded-3xl font-black text-xl tracking-[0.3em] text-white shadow-2xl transition-all duration-500
+                      w-full py-5 rounded-3xl font-black text-xl tracking-[0.3em] text-white shadow-2xl transition-all duration-500 border
                       ${isSubmitting || !hasAddedAlternative
-                        ? 'bg-slate-800/50 text-slate-600 cursor-not-allowed border border-white/5' 
-                        : 'bg-gradient-to-r from-indigo-600 via-purple-600 to-fuchsia-600 hover:scale-[1.02] active:scale-95 shadow-indigo-500/20'
+                        ? 'bg-slate-900/50 text-slate-600 border-white/5 cursor-not-allowed' 
+                        : 'bg-gradient-to-r from-indigo-600 via-purple-600 to-fuchsia-600 border-white/20 hover:scale-[1.02] active:scale-95 shadow-indigo-500/20'
                       }
                     `}
                    >
-                     {isSubmitting ? '正在重塑现实...' : hasAddedAlternative ? '定格这段瞬间' : '请先选择一个分支'}
+                     {isSubmitting ? '正在重塑因果...' : hasAddedAlternative ? '提交这段命运' : '请先置入备选片段'}
                    </button>
                 </div>
               </div>
@@ -283,12 +344,18 @@ const App: React.FC = () => {
 
         {gameState === 'ended' && gameOutcome && (
           <div className="mt-12 p-12 bg-slate-900/60 border border-white/10 rounded-[2.5rem] text-center shadow-[0_0_100px_rgba(0,0,0,0.8)] backdrop-blur-3xl animate-in zoom-in-95 duration-700">
+            {currentImage && (
+               <div className="relative mb-8 rounded-2xl overflow-hidden border border-white/10">
+                 <img src={currentImage} alt="Final Frame" className="w-full opacity-60 grayscale scale-[0.95]" />
+                 <div className="absolute inset-0 bg-red-950/20 mix-blend-multiply" />
+               </div>
+            )}
             <h2 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-indigo-200 to-purple-200 mb-10 serif tracking-tighter">
               {gameOutcome.ending_type === 'total_distrust' ? '信任崩塌' : '现实收束'}
             </h2>
             <div className="text-2xl text-indigo-100/90 leading-relaxed mb-16 serif italic font-light">“{gameOutcome.ending_text}”</div>
             
-            <div className="w-full mb-16">
+            <div className="w-full mb-16 px-4">
               <div className="flex justify-between items-end mb-4 px-2">
                 <span className="text-[10px] font-black text-slate-500 tracking-widest uppercase">最终局势</span>
                 <span className="text-xl font-black text-red-500 italic serif">{situation.status_label}</span>
@@ -305,7 +372,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <footer className="fixed bottom-6 left-0 w-full py-1 text-center text-[10px] text-slate-700 font-bold uppercase tracking-[0.8em] pointer-events-none z-50">
+      <footer className="fixed bottom-6 left-0 w-full py-1 text-center text-[10px] text-slate-700 font-bold uppercase tracking-[0.8em] pointer-events-none z-[110]">
         BEFORE GOING HOME · 叙事剪辑实验室
       </footer>
     </div>

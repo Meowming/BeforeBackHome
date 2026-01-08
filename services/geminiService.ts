@@ -14,19 +14,17 @@ const SYSTEM_INSTRUCTION = `你是一个叙事裁决型 AI，用于一款互动�
 4. 提交后，你将根据叙事逻辑的合理性与“暴露风险”，裁决接下来的局势。
 
 核心裁决逻辑：
-- 废除具体数值（信任、自主等），改为判断“局势严重程度 (severity)”（0-100）。
-- 0 表示完全安全且信任感极佳（绿色）。
-- 50 表示父母开始怀疑，气氛变得紧张（橙色）。
-- 100 表示彻底败露或信任崩塌，游戏结束（红色）。
-- 如果叙事中出现了明显的穿帮、巨大的逻辑漏洞、或被父母当场看到电脑屏幕，直接判定 is_game_over 为 true。
+- 判断“局势严重程度 (severity)”（0-100）。
+- 0 表示完全安全（绿色），100 表示彻底败露（红色）。
+- 你需要生成一个 visual_prompt，用于描述当前情景的画面。画面应该是第三人称视角，风格为“紧张的现代感写实插画”。
 
 你每个回合必须：
-1. 分析玩家提交的叙事序列，给出新的 severity 分数。
-2. 给出 status_label（如：风平浪静、略显局促、极度可疑、末日临头）。
-3. 给出 player_feedback_cn（对玩家刚才编织出的叙事逻辑的评价）。
-4. 生成下一回合的基础片段 (next_fragments_cn) 和 3 个全新备选项 (alternatives_cn)。
+1. 分析玩家提交的序列，给出新的 severity 和 status_label。
+2. 给出 player_feedback_cn。
+3. 生成 visual_prompt：一段英文描述，描述当前卧室内的紧张氛围（如：少年紧张地看着发光的屏幕，房门正缓缓打开）。
+4. 生成下一回合的基础片段和 3 个备选项。
 
-重要：叙事文本必须是简体中文。`;
+重要：叙事文本必须是简体中文，visual_prompt 必须是英文。`;
 
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
@@ -44,12 +42,13 @@ const RESPONSE_SCHEMA = {
     new_situation: {
       type: Type.OBJECT,
       properties: {
-        severity: { type: Type.NUMBER, description: "0-100 score of how bad things are." },
-        status_label: { type: Type.STRING, description: "A short label describing current status." },
+        severity: { type: Type.NUMBER },
+        status_label: { type: Type.STRING },
       },
       required: ["severity", "status_label"],
     },
     player_feedback_cn: { type: Type.STRING },
+    visual_prompt: { type: Type.STRING, description: "A prompt for image generation reflecting the current tension." },
     next_fragments_cn: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
@@ -59,24 +58,21 @@ const RESPONSE_SCHEMA = {
       items: { type: Type.STRING },
     },
   },
-  required: ["turn_id", "outcome", "new_situation", "player_feedback_cn", "next_fragments_cn", "alternatives_cn"],
+  required: ["turn_id", "outcome", "new_situation", "player_feedback_cn", "visual_prompt", "next_fragments_cn", "alternatives_cn"],
 };
 
 export async function adjudicateTurn(
   history: string[],
   finalOrder: string[],
   currentSituation: Situation
-): Promise<TurnOutcome> {
+): Promise<TurnOutcome & { visual_prompt: string }> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const prompt = `
-当前局势严重度：${currentSituation.severity} (${currentSituation.status_label})
+当前局势：${currentSituation.severity} (${currentSituation.status_label})
 历史背景：${history.join(' -> ')}
-
-玩家提交的叙事序列：
+玩家提交序列：
 ${finalOrder.map((t, i) => `${i + 1}. ${t}`).join('\n')}
-
-请根据叙事逻辑的暴露风险裁决这一回合。如果父母已经彻底怀疑或证据确凿，请结束游戏。
 `;
 
   const response = await ai.models.generateContent({
@@ -89,5 +85,29 @@ ${finalOrder.map((t, i) => `${i + 1}. ${t}`).join('\n')}
     },
   });
 
-  return JSON.parse(response.text || "{}") as TurnOutcome;
+  return JSON.parse(response.text || "{}");
+}
+
+export async function generateSceneImage(prompt: string): Promise<string | null> {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const finalPrompt = `An intense, cinematic digital art illustration of: ${prompt}. Cinematic lighting, domestic suspense style, high detail.`;
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: finalPrompt }] },
+      config: {
+        imageConfig: { aspectRatio: "16:9" }
+      },
+    });
+
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    }
+  } catch (e) {
+    console.error("Image generation failed", e);
+  }
+  return null;
 }
